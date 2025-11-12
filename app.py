@@ -10,4 +10,5 @@ if st.button("Fragen"):
             answer = ask_openai(prompt)
             st.write(answer)
         except Exception as e:
-            st.error(f"Fehler bei der KI-Anfrage: {e}")
+            st.error(f"Fehler bei der KI-Anfrage: {e}")git clone https://github.com/hunzaakbar12/smart-cook.git
+cd smart-cook
