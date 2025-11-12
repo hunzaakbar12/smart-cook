@@ -24,16 +24,15 @@ def run_query(sql, params=()):
         return cols, rows
 
 def search_recipes(q: str, limit: int = 20):
-    # Passe Tabellennamen/Spalten an eure DB an
     sql = """
-      SELECT id, title, description
-      FROM recipes
-      WHERE title LIKE ? OR IFNULL(description,'') LIKE ?
-      LIMIT ?
+    SELECT id, title, servings
+    FROM recipes
+    WHERE title LIKE ?
+    LIMIT ?
     """
     like = f"%{q}%"
     with get_conn() as con:
         cur = con.cursor()
-        cur.execute(sql, (like, like, limit))
+        cur.execute(sql, (like, limit))
         cols = [c[0] for c in cur.description]
         return cols, cur.fetchall()
