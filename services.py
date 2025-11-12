@@ -1,20 +1,39 @@
 # services.py
+import sqlite3
 import os
-from dotenv import load_dotenv
-from openai import OpenAI
 
-# 1) .env laden und Client bauen
-load_dotenv()  # liest OPENAI_API_KEY aus .env im Projektroot
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "smart_cook_ultra_simple_BIG.db")
 
-# 2) Einfache Helferfunktion für KI-Antworten
-def ask_openai(prompt: str) -> str:
+def get_conn():
+    # check_same_thread=False: erlaubt Nutzung in Streamlit
+    return sqlite3.connect(DB_PATH, check_same_thread=False)
+
+def list_tables():
+    with get_conn() as con:
+        cur = con.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;")
+        return [row[0] for row in cur.fetchall()]
+
+def run_query(sql, params=()):
+    with get_conn() as con:
+        cur = con.cursor()
+        cur.execute(sql, params)
+        cols = [c[0] for c in cur.description] if cur.description else []
+        rows = cur.fetchall()
+        return cols, rows
+
+def search_recipes(q: str, limit: int = 20):
+    # Passe Tabellennamen/Spalten an eure DB an
+    sql = """
+      SELECT id, title, description
+      FROM recipes
+      WHERE title LIKE ? OR IFNULL(description,'') LIKE ?
+      LIMIT ?
     """
-    Schickt einen Prompt an OpenAI und gibt den Antworttext zurück.
-    """
-    resp = client.chat.completions.create(
-        model="gpt-4o-mini",        # schnell & günstig
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.6,
-    )
-    return resp.choices[0].message.content.strip() 
+    like = f"%{q}%"
+    with get_conn() as con:
+        cur = con.cursor()
+        cur.execute(sql, (like, like, limit))
+        cols = [c[0] for c in cur.description]
+        return cols, cur.fetchall()
