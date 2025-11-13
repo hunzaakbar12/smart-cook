@@ -65,4 +65,6 @@ with tab2:
             else:
                 st.info("Keine Zeilen zurückgegeben.")
         except Exception as e:
-            st.error(f"SQL-Fehler: {type(e).__name__}: {e}")
+
+            st.error(f"SQL-Fehler: {e}")
+
