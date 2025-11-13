@@ -1,70 +1,74 @@
-# app.py
 import streamlit as st
-from services import list_tables, run_query, search_recipes
+import sqlite3
+import pandas as pd
 
-# ---- Seiteneinstellungen ----
-st.set_page_config(
-    page_title="Smart Cook",
-    page_icon="🤖",
-    layout="wide"
-)
+# ---- App-Konfiguration ----
+st.set_page_config(page_title="Smart Cook", page_icon="🤖", layout="wide")
 
 # ---- Header ----
 st.title("🤖 Smart Cook – Dein KI-Rezept-Guide")
-st.caption("Frag nach Rezepten oder Zutaten – ich finde passende Ideen in deiner Datenbank.")
+st.caption("Frag nach Rezepten oder Zutaten – ich finde passende Ideen in deiner Datenbank :)")
 
-# ---- Sidebar: Datenbankstatus & Suche ----
-with st.sidebar:
-    st.header("Datenbank")
+# ---- Sidebar: Einstellungen & Verbindung ----
+st.sidebar.header("Settings")
+st.sidebar.write("This is a simple chat application using SQLite. Connect to the database and start chatting.")
+
+db_path = st.sidebar.text_input("Database", value="smart_cook_ultra_simple_BIG.db")
+
+# Verbindung herstellen
+if st.sidebar.button("Connect"):
     try:
-        tables = list_tables()
-        st.success(f"Verbunden • {len(tables)} Tabellen")
-        st.write("**Tabellen:**")
-        for t in tables:
-            st.write(f"• {t}")
+        conn = sqlite3.connect(db_path)
+        st.session_state["db_connected"] = True
+        st.session_state["db_path"] = db_path
+        st.sidebar.success("✅ Connected successfully!")
     except Exception as e:
-        st.error(f"DB-Fehler: {e}")
-        tables = []
+        st.session_state["db_connected"] = False
+        st.sidebar.error(f"❌ Connection failed: {e}")
 
-    st.divider()
-    st.subheader("Schnellsuche")
-    q = st.text_input("Suchbegriff (Titel oder Zutat)", placeholder="z. B. pasta, tomaten, vegan …")
-    top_n = st.slider("Anzahl Ergebnisse", 5, 50, 20)
+# ---- Schnellsuche ----
+st.sidebar.divider()
+st.sidebar.subheader("Quick Search")
+q = st.sidebar.text_input("Search term (title or ingredient)", placeholder="e.g. pasta, tomato, vegan ...")
+top_n = st.sidebar.slider("Number of results", 5, 50, 20)
 
-# ---- Hauptbereich mit Tabs ----
-tab1, tab2 = st.tabs(["🔎 Rezepte suchen", "📝 Eigene SQL"])
+# ---- Hauptbereich ----
+st.subheader("Ergebnisse")
 
-# ---------- TAB 1: Rezeptsuche ----------
-with tab1:
-    st.subheader("Ergebnisse")
-
-    if q.strip():  # Nur suchen, wenn etwas eingegeben wurde
+if st.session_state.get("db_connected", False):
+    if q.strip():
         try:
-            cols, rows = search_recipes(q, top_n)
+            conn = sqlite3.connect(st.session_state["db_path"])
+            cur = conn.cursor()
+
+            # 🔍 Da es keine 'instructions'-Spalte gibt, suchen wir nur in 'title' + 'ingredients'
+            sql = """
+                SELECT DISTINCT r.id, r.title AS recipe_title, r.servings
+                FROM recipes r
+                LEFT JOIN recipe_ingredients ri ON r.id = ri.recipe_id
+                LEFT JOIN ingredients i ON ri.ingredient_id = i.id
+                WHERE r.title LIKE ? OR i.name LIKE ?
+                LIMIT ?;
+            """
+
+            like_q = f"%{q}%"
+            cur.execute(sql, (like_q, like_q, top_n))
+            rows = cur.fetchall()
+            cols = [desc[0] for desc in cur.description]
+            conn.close()
+
             if rows:
-                st.dataframe(rows, columns=cols, use_container_width=True, hide_index=True)
+                df = pd.DataFrame(rows, columns=cols)
+                for _, row in df.iterrows():
+                    with st.expander(f"🍽️ {row['recipe_title']}"):
+                        st.write(f"**Portionen:** {row['servings']}")
+                        st.write("_Keine detaillierte Anleitung in der Datenbank gefunden._")
             else:
-                st.info("Keine Treffer. Tipp: versuche allgemeiner zu suchen (z. B. „pasta“).")
+                st.info("Keine Treffer. Versuch es allgemeiner – z. B. „pasta“ oder „salat“.")
+
         except Exception as e:
             st.error(f"Fehler bei der Suche: {type(e).__name__}: {e}")
     else:
         st.info("🔎 Gib links einen Suchbegriff ein und wähle die Anzahl der Ergebnisse.")
-
-# ---------- TAB 2: Eigene SQL-Abfrage ----------
-with tab2:
-    st.subheader("SQL ausführen")
-
-    default_sql = "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;"
-    sql = st.text_area("SQL", value=default_sql, height=160, label_visibility="collapsed")
-
-    if st.button("SQL ausführen", type="primary"):
-        try:
-            cols, rows = run_query(sql)
-            if rows:
-                st.dataframe(rows, columns=cols, use_container_width=True, hide_index=True)
-            else:
-                st.info("Keine Zeilen zurückgegeben.")
-        except Exception as e:
-
-            st.error(f"SQL-Fehler: {e}")
-
+else:
+    st.warning("Bitte zuerst links eine Datenbank verbinden.")
