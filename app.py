@@ -26,6 +26,20 @@ if st.sidebar.button("Connect"):
         st.session_state["db_connected"] = False
         st.sidebar.error(f"❌ Connection failed: {e}")
 
+# ---- Funktion: Zubereitungsschritte laden ----
+def get_recipe_steps(db_path, recipe_id):
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT step_no, instruction
+        FROM recipe_steps
+        WHERE recipe_id = ?
+        ORDER BY step_no;
+    """, (recipe_id,))
+    steps = cur.fetchall()
+    conn.close()
+    return steps
+
 # ---- Schnellsuche ----
 st.sidebar.divider()
 st.sidebar.subheader("Quick Search")
@@ -41,7 +55,6 @@ if st.session_state.get("db_connected", False):
             conn = sqlite3.connect(st.session_state["db_path"])
             cur = conn.cursor()
 
-            # 🔍 Da es keine 'instructions'-Spalte gibt, suchen wir nur in 'title' + 'ingredients'
             sql = """
                 SELECT DISTINCT r.id, r.title AS recipe_title, r.servings
                 FROM recipes r
@@ -61,8 +74,20 @@ if st.session_state.get("db_connected", False):
                 df = pd.DataFrame(rows, columns=cols)
                 for _, row in df.iterrows():
                     with st.expander(f"🍽️ {row['recipe_title']}"):
+
+                        # --- Portionen anzeigen ---
                         st.write(f"**Portionen:** {row['servings']}")
-                        st.write("_Keine detaillierte Anleitung in der Datenbank gefunden._")
+
+                        # --- Neue Funktion: Schritte laden ---
+                        steps = get_recipe_steps(st.session_state["db_path"], int(row["id"]))
+
+                        if steps:
+                            st.write("*Zubereitung:*")
+                            for nr, text in steps:
+                                st.markdown(f"- *Schritt {nr}:* {text}")
+                        else:
+                            st.write("_Keine detaillierte Anleitung in der Datenbank gefunden._")
+
             else:
                 st.info("Keine Treffer. Versuch es allgemeiner – z. B. „pasta“ oder „salat“.")
 
