@@ -1,4 +1,3 @@
-import os
 import sqlite3
 from typing import List, Tuple, Optional
 
@@ -15,42 +14,60 @@ except ImportError:
     pass
 
 # ---------------------------------------------------------
-# Globaler Stil-Prompt – so "denkt" deine KI
+# Globaler System-/Stil-Prompt – "Gehirn" der KI
 # ---------------------------------------------------------
 AI_STYLE_PROMPT = """
-Du bist ein freundlicher, klarer und hilfsbereiter Kochassistent – ähnlich wie ChatGPT.
-Du:
-- antwortest zuerst direkt auf die Frage der Person,
-- bleibst ehrlich, wenn etwas NICHT vorhanden ist,
-- bietest danach passende Alternativen aus der Datenbank an,
-- schreibst auf natürlichem, lockeren Deutsch (duzen ist ok),
-- benutzt Emojis sparsam und passend (z.B. 🙂, 🍝, 🍽️).
+Du bist „Smart Cook“, ein freundlicher, klarer und leicht humorvoller Kochassistent.
 
-Wichtige Regeln:
-- Du darfst KEINE neuen Rezepte oder Zutaten erfinden.
-- Du arbeitest ausschließlich mit den Rezepten und Zutaten,
-  die dir im Prompt gegeben werden (das sind die Daten aus der Datenbank).
-- Wenn ein gewünschtes Rezept nicht vorhanden ist, sagst du das klar:
-  z.B. „Dieses Rezept gibt es in der Datenbank leider nicht.“
-  und bietest dann sinnvolle Alternativen an.
+DEINE QUELLE:
+- Du arbeitest AUSSCHLIESSLICH mit den Informationen, die dir im Prompt übergeben werden.
+- Diese Informationen kommen aus einer SQLite-Datenbank (Rezepte, Zutaten, Schritte, Zeiten).
+- Alles, was NICHT im Datenblock steht, gilt für dich als unbekannt.
+
+HARTE REGELN:
+- Du erfindest KEINE neuen Rezepte, Zutaten, Zeiten, Mengen oder Schritte.
+- Wenn eine Information nicht im Datenblock steht, sagst du das ehrlich.
+  Beispiel: „In den gespeicherten Daten steht dazu leider nichts.“
+- Du darfst Formulierungen nur sprachlich glätten und strukturieren,
+  aber den INHALT nicht verändern.
+- Wenn du etwas schätzt oder interpretierst, musst du klar sagen, dass es eine Schätzung ist.
+
+AUFGABENMODI:
+- Wenn die Person kochen möchte („ich will … kochen“, „gib mir das Rezept für …“):
+  -> Gib eine freundliche, gut strukturierte Anleitung auf Basis der vorhandenen Zutaten
+     und/oder Schritte aus der Datenbank.
+- Wenn nach Zeit, Dauer, Portionen oder anderen Fakten gefragt wird:
+  -> Beantworte die Frage nur mit den vorhandenen Werten (z.B. Minuten aus den Schritt-Daten).
+  -> Bei Zeitfragen soll die Antwort kurz und fokussiert sein, keine ganze Rezeptanleitung.
+- Wenn nach Zutaten gefragt wird:
+  -> Liste die Zutaten übersichtlich auf.
+- Wenn es kein passendes Rezept gibt:
+  -> Sag das klar und biete nur Rezepte an, die im Datenblock vorhanden sind.
+
+STIL:
+- Schreibe auf natürlichem, lockerem Deutsch (duzen ist ok).
+- Sei freundlich, aber nicht übertrieben.
+- Struktur (Überschriften, Listen) ist willkommen, wenn es hilft.
+- Emojis sparsam einsetzen (z.B. 🙂, 🍝, 🍽️, ⏲️).
 """
 
 # ---------------------------------------------------------
-# LLMs (LangChain)
+# LLM-Instanzen
 # ---------------------------------------------------------
 llm_mini = ChatOpenAI(
-    model="gpt-4.1-mini",  # oder das Campus-Modell
+    model="gpt-4.1-mini",
     temperature=0.3,
 )
 
 llm_steps = ChatOpenAI(
     model="gpt-4.1-mini",
-    temperature=0.7,
+    temperature=0.5,
 )
 
 # ---------------------------------------------------------
-# 1) DB-Helper – passen zu deiner Datenbank!
+# DB-Helper
 # ---------------------------------------------------------
+
 
 def search_recipe_by_name(db_path: str, term: str) -> List[Tuple[int, str, int]]:
     """Suche Rezepte nach Titel (Spalte: recipes.title)."""
@@ -71,21 +88,61 @@ def search_recipe_by_name(db_path: str, term: str) -> List[Tuple[int, str, int]]
     return rows
 
 
-def load_ingredients(db_path: str, recipe_id: int):
-    """Lade Zutaten zu einem Rezept (joins recipe_ingredients + ingredients)."""
+def load_recipe_full(db_path: str, recipe_id: int):
+    """
+    Lade alle relevanten Infos zu einem Rezept:
+    - Titel, Portionen
+    - Zutatenliste
+    - Schritte inkl. Minuten (falls vorhanden)
+    """
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
-    sql = """
-        SELECT i.name, ri.qty, ri.unit, ri.note
+
+    # Rezept-Stammdaten
+    cur.execute(
+        "SELECT title, servings FROM recipes WHERE id = ?",
+        (recipe_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return None
+    title, servings = row
+
+    # Zutaten
+    cur.execute(
+        """
+        SELECT i.name
         FROM recipe_ingredients ri
         JOIN ingredients i ON i.id = ri.ingredient_id
         WHERE ri.recipe_id = ?
-        ORDER BY ri.ingredient_id
-    """
-    cur.execute(sql, (recipe_id,))
-    rows = cur.fetchall()
+        ORDER BY i.name
+        """,
+        (recipe_id,),
+    )
+    ingredients = [r[0] for r in cur.fetchall()]
+
+    # Schritte (optional mit Minuten)
+    cur.execute(
+        """
+        SELECT step_no, instruction, minutes
+        FROM recipe_steps
+        WHERE recipe_id = ?
+        ORDER BY step_no
+        """,
+        (recipe_id,),
+    )
+    steps = cur.fetchall()
+
     conn.close()
-    return rows
+
+    return {
+        "id": recipe_id,
+        "title": title,
+        "servings": servings,
+        "ingredients": ingredients,
+        "steps": steps,  # Liste von (step_no, instruction, minutes)
+    }
 
 
 def load_all_recipes_for_ai(db_path: str):
@@ -106,14 +163,41 @@ def load_all_recipes_for_ai(db_path: str):
     conn.close()
     return rows
 
+
+def get_quick_recipes(db_path: str, limit: int = 5):
+    """
+    Liefert Rezepte mit der geringsten Gesamt-Minutenzeit
+    (Summe der 'minutes' aus recipe_steps).
+    """
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    sql = """
+        SELECT r.id,
+               r.title,
+               r.servings,
+               COALESCE(SUM(rs.minutes), 0) AS total_minutes
+        FROM recipes r
+        LEFT JOIN recipe_steps rs ON rs.recipe_id = r.id
+        GROUP BY r.id, r.title, r.servings
+        HAVING total_minutes > 0
+        ORDER BY total_minutes ASC
+        LIMIT ?
+    """
+    cur.execute(sql, (limit,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows  # [(id, title, servings, total_minutes), ...]
+
+
 # ---------------------------------------------------------
-# 2) LangChain-Chain: User-Satz -> Suchbegriff
+# 1) User-Text -> Suchbegriff
 # ---------------------------------------------------------
+
 
 search_term_prompt = ChatPromptTemplate.from_template(
     AI_STYLE_PROMPT
     + """
-Der Benutzer / die Benutzerin schreibt, was er/sie kochen möchte.
+Der Benutzer / die Benutzerin schreibt, was er/sie kochen oder wissen möchte.
 
 Text:
 \"\"\"{user_text}\"\"\"
@@ -145,72 +229,96 @@ def extract_search_term(user_text: str) -> str:
     except Exception:
         return user_text
 
+
+def is_low_effort_question(text: str) -> bool:
+    """
+    Erkenne Fragen wie:
+    - welche Rezepte haben wenig Aufwand?
+    - was geht schnell?
+    - hast du schnelle Rezepte?
+    """
+    t = text.lower()
+    keywords = [
+        "wenig aufwand",
+        "schnell",
+        "schnelle rezepte",
+        "geht schnell",
+        "einfach und schnell",
+        "nicht viel arbeit",
+    ]
+    return any(kw in t for kw in keywords)
+
+
 # ---------------------------------------------------------
-# 3) LangChain-Chain: Schritt-für-Schritt-Anleitung
+# 2) Kontextblock für ein Rezept aus der DB bauen
 # ---------------------------------------------------------
 
-def ingredients_to_block(ingredients) -> str:
-    lines = []
-    for name, qty, unit, note in ingredients:
-        qty_part = f"{qty}" if qty is not None else ""
-        unit_part = f" {unit}" if unit else ""
-        note_part = f" ({note})" if note else ""
-        line = f"- {qty_part}{unit_part} {name}{note_part}".strip()
-        lines.append(line)
+
+def build_recipe_context(recipe: dict) -> str:
+    """
+    Erzeugt einen klaren Textblock mit allen Infos aus der DB,
+    den wir dem LLM als Kontext geben.
+    """
+    lines: List[str] = []
+    lines.append(f"Rezept: {recipe['title']}")
+    lines.append(f"Portionen: {recipe['servings']}")
+    lines.append("")
+    lines.append("Zutaten:")
+    for name in recipe["ingredients"]:
+        lines.append(f"- {name}")
+    lines.append("")
+
+    if recipe["steps"]:
+        lines.append("Schritte aus der Datenbank:")
+        for step_no, instr, minutes in recipe["steps"]:
+            minutes_part = f" (ca. {int(minutes)} Minuten)" if minutes is not None else ""
+            lines.append(f"{step_no}. {instr}{minutes_part}")
+    else:
+        lines.append("Es sind KEINE Kochschritte in der Datenbank gespeichert.")
     return "\n".join(lines)
 
 
-steps_prompt = ChatPromptTemplate.from_template(
+# ---------------------------------------------------------
+# 3) QA-Chain: beliebige Frage + DB-Kontext
+# ---------------------------------------------------------
+
+
+qa_prompt = ChatPromptTemplate.from_template(
     AI_STYLE_PROMPT
     + """
-Erstelle eine ausführliche, gut strukturierte Schritt-für-Schritt-Anleitung
-für das folgende Rezept. Du MUSST dich strikt an die Zutatenliste halten
-und darfst keine neuen Zutaten oder Mengen erfinden.
+Hier sind alle Informationen aus der Datenbank zu einem Rezept:
 
-Rezeptname: {title}
-Portionen: {servings}
+---------------- DB-DATEN-START ----------------
+{db_context}
+---------------- DB-DATEN-ENDE ------------------
 
-Zutaten:
-{ingredients_block}
+Frage der Benutzerin / des Benutzers:
+\"\"\"{user_query}\"\"\"
 
-Schreibe die Antwort auf Deutsch in etwa diesem Format:
+WICHTIG:
+- Nutze ausschließlich die Informationen aus dem DB-Datenblock.
+- Wenn die Frage etwas verlangt, das dort nicht drinsteht, sag klar,
+  dass diese Information nicht gespeichert ist.
+- Wenn die Frage hauptsächlich nach der DAUER oder ZEIT fragt
+  (z.B. "wie lange dauert ...", "wie viele Minuten ..."):
+  -> antworte kurz und fokussiert mit einer sinnvollen Zeitangabe,
+     die sich aus den vorhandenen Minutenangaben oder Formulierungen in den Schritten ableiten lässt.
+  -> gib in diesem Fall KEINE komplette Schritt-für-Schritt-Anleitung aus.
+- Wenn die Frage nach einer Anleitung oder dem Rezept fragt
+  (z.B. "wie mache ich ...", "gib mir das Rezept für ..."):
+  -> gib eine gut strukturierte Antwort mit Einleitung, Schritten und ggf. Tipp,
+     aber erfinde keine neuen Zutaten, Zeiten oder Zwischenschritte.
 
-## Kurze Einleitung
-1–3 Sätze, was das für ein Gericht ist und worauf man achten sollte.
-
-## Schritte
-1. ...
-2. ...
-3. ...
-
-## Tipp
-Ein kurzer Tipp zum Variieren oder Anrichten des Gerichts.
+Antworte auf Deutsch im oben beschriebenen Stil.
 """
 )
 
-steps_chain = steps_prompt | llm_steps | StrOutputParser()
-
-
-def generate_steps_from_db(title: str, servings: int, ingredients) -> str:
-    ing_block = ingredients_to_block(ingredients)
-    try:
-        result = steps_chain.invoke(
-            {
-                "title": title,
-                "servings": servings,
-                "ingredients_block": ing_block,
-            }
-        )
-        return result.strip()
-    except Exception as e:
-        return (
-            "Beim Erzeugen der Anleitung ist ein Fehler aufgetreten: "
-            f"{type(e).__name__}: {e}"
-        )
+qa_chain = qa_prompt | llm_steps | StrOutputParser()
 
 # ---------------------------------------------------------
-# 4) LangChain-Chain: Allgemeine Fragen -> Vorschläge
+# 4) Vorschlags-Chain, wenn kein direktes Rezept gefunden wurde
 # ---------------------------------------------------------
+
 
 suggest_prompt = ChatPromptTemplate.from_template(
     AI_STYLE_PROMPT
@@ -222,23 +330,24 @@ Der Benutzer / die Benutzerin stellt folgende Frage:
 Du hast Zugriff auf diese Rezepte aus der Datenbank:
 {recipes_block}
 
+WICHTIG:
+- Du darfst nur Rezepte aus dieser Liste verwenden.
+- Du darfst keine neuen Rezepte erfinden.
+
 Wenn der Benutzer nach einem bestimmten Gericht fragt (z.B. "Pizza"),
-das NICHT als Titel in der Liste vorkommt, dann:
-1. Sag zuerst klar und höflich, dass es dieses Rezept nicht in der Datenbank gibt.
-2. Biete danach 3–6 passende Alternativen aus der Datenbank an und erkläre kurz,
-   warum sie zur Anfrage passen (z.B. ähnliche Zutaten, ähnliche Art Gericht).
+das NICHT als Titel in der Liste vorkommt:
+1. Sag klar, dass dieses Rezept in der Datenbank nicht vorhanden ist.
+2. Biete 3–6 Rezepte aus der Liste an, die thematisch passen
+   (ähnliche Zutaten, ähnliche Art Gericht).
 
-Wenn die Frage allgemeiner ist (z.B. "gibt es vegane rezepte?"),
-dann:
-1. Sag kurz, ob und welche Rezepte gut zur Anfrage passen.
-2. Wähle 3–6 sinnvolle Rezepte aus und erläutere in 1 Satz, warum.
+Wenn die Frage allgemeiner ist (z.B. "gibt es vegane rezepte?"):
+1. Sag kurz, ob passende Rezepte in der Liste vorhanden sind.
+2. Wähle 3–6 sinnvolle Rezepte aus und erläutere in 1 Satz, warum sie passen.
 
-Du darfst keine neuen Rezepte oder Zutaten erfinden.
-Antworte auf Deutsch in etwa diesem Stil:
-
-[Erste, ehrliche Reaktion]
-[Liste der Alternativen mit kurzer Erklärung]
-[Optional: eine Empfehlung, womit die Person starten könnte]
+Antwortstil:
+- Erst eine ehrliche, kurze Reaktion.
+- Dann die Liste der passenden Rezepte mit Erklärung.
+- Optional eine Empfehlung, womit die Person starten könnte.
 """
 )
 
@@ -275,45 +384,98 @@ def suggest_recipes_from_query(
             f"{type(e).__name__}: {e}"
         )
 
+
 # ---------------------------------------------------------
-# 5) Hauptfunktion für Streamlit
+# 5) Antwort für „wenig Aufwand / schnelle Rezepte“
 # ---------------------------------------------------------
+
+
+def answer_quick_recipes(db_path: str) -> str:
+    rows = get_quick_recipes(db_path, limit=5)
+    if not rows:
+        return (
+            "In der Datenbank sind leider keine Rezepte mit hinterlegter Zeit gespeichert. "
+            "Deshalb kann ich nicht sagen, welche besonders wenig Aufwand haben."
+        )
+
+    lines: List[str] = []
+    lines.append("Hier sind ein paar Rezepte mit wenig Zeitaufwand:\n")
+    for idx, (rid, title, servings, total_minutes) in enumerate(rows, start=1):
+        lines.append(
+            f"{idx}. {title} (ID {rid}) – ca. {int(total_minutes)} Minuten, für {servings} Portionen"
+        )
+    lines.append(
+        "\nDie Liste ist nach Zeit sortiert – oben stehen die Gerichte mit der kürzesten Zubereitungsdauer."
+    )
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------
+# 6) Hauptfunktion für Streamlit
+# ---------------------------------------------------------
+
 
 def handle_user_query(db_path: str, query: str) -> str:
     """
-    Nimmt den vollen User-Satz und liefert:
-    - Liste von Treffern
-    - Anleitung zu einem Rezept
-    - oder Vorschläge, wenn es kein direktes Rezept gibt.
+    Zentrale Funktion für die App:
+    - nimmt den vollständigen User-Text,
+    - sucht passende Rezepte,
+    - liefert entweder:
+      * eine intelligente, aber streng DB-gebundene Antwort zu einem Rezept
+      * eine Liste von Vorschlägen
+      * oder einen Hinweis, dass nichts vorhanden ist.
     """
     query = query.strip()
     if not query:
         return "Bitte gib eine Frage oder einen Rezeptnamen ein 🙂."
 
+    # Spezieller Fall: „wenig Aufwand / schnell“
+    if is_low_effort_question(query):
+        return answer_quick_recipes(db_path)
+
+    # 1) Suchbegriff extrahieren
     search_term = extract_search_term(query)
 
+    # 2) Rezepte per Titel suchen
     matches = search_recipe_by_name(db_path, search_term)
 
+    # 3) Kein Treffer -> Vorschlags-Chain
     if not matches:
         return suggest_recipes_from_query(db_path, query, search_term)
 
+    # 4) Mehrere Treffer -> Auswahl anzeigen
     if len(matches) > 1:
         titles = "\n".join(f"- {title} (ID {rid})" for rid, title, _ in matches)
         return (
             "Ich habe mehrere passende Rezepte in der Datenbank gefunden:\n"
             f"{titles}\n\n"
             "Sag mir bitte den genauen Namen oder die ID des Rezepts, "
-            "damit ich dir eine ausführliche Schritt-für-Schritt-Anleitung geben kann. 🍽️"
+            "damit ich dir gezielt weiterhelfen kann. 🍽️"
         )
 
+    # 5) Genau ein Rezept: vollständigen DB-Kontext aufbauen
     recipe_id, title, servings = matches[0]
-    ingredients = load_ingredients(db_path, recipe_id)
+    recipe_data = load_recipe_full(db_path, recipe_id)
 
-    if not ingredients:
+    if not recipe_data:
         return (
-            f"Ich habe das Rezept **{title}** gefunden, "
-            "aber in der Datenbank sind keine Zutaten dazu hinterlegt."
+            f"Ich habe ein Rezept mit der ID {recipe_id} gefunden, "
+            "konnte aber die Details nicht laden."
         )
 
-    steps_text = generate_steps_from_db(title, servings, ingredients)
-    return f"🍝 **{title}** (für {servings} Portionen)\n\n{steps_text}"
+    db_context = build_recipe_context(recipe_data)
+
+    # 6) LLM-Antwort auf Basis der DB-Daten und der ursprünglichen User-Frage
+    try:
+        answer = qa_chain.invoke(
+            {
+                "db_context": db_context,
+                "user_query": query,
+            }
+        )
+        return answer.strip()
+    except Exception as e:
+        return (
+            "Beim Erzeugen der Antwort ist ein Fehler aufgetreten: "
+            f"{type(e).__name__}: {e}"
+        )
