@@ -44,9 +44,9 @@ def get_recipe_steps(db_path, recipe_id):
 
 # ---- Schnellsuche ----
 st.sidebar.divider()
-st.sidebar.subheader("Quick Search")
-q = st.sidebar.text_input("Search term (title or ingredient)", placeholder="e.g. pasta, tomato, vegan ...")
-top_n = st.sidebar.slider("Number of results", 5, 50, 20)
+st.sidebar.subheader("Schnelle Suche")
+q = st.sidebar.text_input("Suchwörter (Titel oder Rezepte)", placeholder="z.B. Rezepte, Zutaten ...")
+top_n = st.sidebar.slider("Anzahl der Ergebnisse", 1, 10)
 
 # ---- Hauptbereich ----
 st.subheader("Ergebnisse")
