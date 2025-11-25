@@ -3,39 +3,57 @@ import sqlite3
 import pandas as pd
 import time
 
-from ai import handle_user_query   # ✅ deine AI bleibt gleich
+
+from ai import handle_user_query
 
 
 # ------------------------------------------------------
-# App Layout
+# App Setup
 # ------------------------------------------------------
 st.set_page_config(page_title="Smart Cook", page_icon="🤖", layout="wide")
 
 st.title("🤖 Smart Cook – Dein KI-Rezept-Guide")
-st.caption("Frag nach Rezepten oder Zutaten – oder chatte mit dem KI-Koch! 🙂")
+st.caption("Frag nach Rezepten oder chatte mit dem Kochbot! 🙂")
 
 
 # ------------------------------------------------------
-# Sidebar: DB Verbindung
+# Session Init
+# ------------------------------------------------------
+if "db_connected" not in st.session_state:
+    st.session_state["db_connected"] = False
+
+if "db_path" not in st.session_state:
+    st.session_state["db_path"] = None
+
+if "messages" not in st.session_state:
+    st.session_state["messages"] = []
+
+
+# ------------------------------------------------------
+# Sidebar: DB Connect
 # ------------------------------------------------------
 st.sidebar.header("Settings")
-st.sidebar.write("SQLite Datenbank verbinden")
-
 db_path = st.sidebar.text_input("Database", value="smart_cook_ultra.db")
 
 if st.sidebar.button("Connect"):
     try:
         conn = sqlite3.connect(db_path)
+        conn.close()
+
         st.session_state["db_connected"] = True
         st.session_state["db_path"] = db_path
+
         st.sidebar.success("✅ Verbunden!")
+        st.balloons()   # 🎈 Ballons
+
+
     except Exception as e:
         st.session_state["db_connected"] = False
         st.sidebar.error(f"❌ Verbindung fehlgeschlagen: {e}")
 
 
 # ------------------------------------------------------
-# Hilfsfunktionen DB
+# DB Helpers
 # ------------------------------------------------------
 def query_db(sql, params=()):
     conn = sqlite3.connect(st.session_state["db_path"])
@@ -47,21 +65,12 @@ def query_db(sql, params=()):
     return pd.DataFrame(rows, columns=cols)
 
 
-def get_steps(recipe_id):
-    return query_db("""
-        SELECT step_no, instruction
-        FROM recipe_steps
-        WHERE recipe_id = ?
-        ORDER BY step_no
-    """, (recipe_id,))
-
-
 # ------------------------------------------------------
-# Suche
+# Rezepte Suche
 # ------------------------------------------------------
-st.subheader("Ergebnisse")
+st.subheader("🔎 Rezepte")
 
-if st.session_state.get("db_connected", False):
+if st.session_state["db_connected"]:
     q = st.sidebar.text_input("Suchwörter", placeholder="z.B. pasta, salat, tomate")
     top_n = st.sidebar.slider("Anzahl der Ergebnisse", 1, 20)
 
@@ -79,6 +88,7 @@ if st.session_state.get("db_connected", False):
 
             if df.empty:
                 st.info("Keine Treffer 😕")
+
             else:
                 for _, row in df.iterrows():
                     with st.expander(f"🍽️ {row['title']}"):
@@ -90,73 +100,66 @@ if st.session_state.get("db_connected", False):
                             JOIN ingredients i ON ri.ingredient_id = i.id
                             WHERE ri.recipe_id = ?
                         """, (row["id"],))
-
                         st.write("**Zutaten:**")
                         st.table(ingredients)
 
-                        steps = get_steps(row["id"])
-
+                        steps = query_db("""
+                            SELECT step_no, instruction
+                            FROM recipe_steps
+                            WHERE recipe_id = ?
+                        """, (row["id"],))
                         st.write("**Zubereitung:**")
+
                         for _, step in steps.iterrows():
                             st.markdown(f"- Schritt {step['step_no']}: {step['instruction']}")
 
         except Exception as e:
-            st.error(f"Fehler: {type(e).__name__}: {e}")
+            st.error(f"Fehler: {e}")
 
 else:
     st.warning("Bitte zuerst verbinden ✅")
 
 
 # ------------------------------------------------------
-# Chatbereich
+# Chat
 # ------------------------------------------------------
 st.divider()
 st.subheader("💬 Chat mit dem KI-Koch")
 
-if "messages" not in st.session_state:
-    st.session_state["messages"] = []
 
-
-# Bisherige Nachrichten anzeigen
 for msg in st.session_state["messages"]:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
 
 # ------------------------------------------------------
-# Eingabe + Tipp-Indikator
+# Eingabe + Tipp Animation
 # ------------------------------------------------------
 user_input = st.chat_input("Was möchtest du heute kochen?")
 
 if user_input:
 
-    # User Nachricht anzeigen
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # Chatverlauf speichern
     st.session_state["messages"].append({"role": "user", "content": user_input})
 
-    # KI Nachricht mit Animation
     with st.chat_message("assistant"):
         typing = st.empty()
 
-        # ✅ animiertes Schreiben
         for dots in ["🤖 schreibt", "🤖 schreibt.", "🤖 schreibt..", "🤖 schreibt..."]:
             typing.markdown(dots)
             time.sleep(0.3)
 
-        # ✅ Antwort berechnen
-        if not st.session_state.get("db_connected", False):
-            answer = "Bitte verbinde zuerst links eine Datenbank ✅"
+        if not st.session_state["db_connected"]:
+            answer = "Bitte verbinde zuerst eine Datenbank ✅"
         else:
             try:
                 answer = handle_user_query(st.session_state["db_path"], user_input)
             except Exception as e:
                 answer = f"❌ Fehler: {e}"
 
-        typing.empty()   # Tippindikator löschen
+        typing.empty()
         st.markdown(answer)
 
-    # Antwort speichern
     st.session_state["messages"].append({"role": "assistant", "content": answer})
